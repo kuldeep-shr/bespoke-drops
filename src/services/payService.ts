@@ -1,8 +1,8 @@
-import { Hold } from '../models/Hold';
-import { Drop } from '../models/Drop';
-import { Wallet } from '../models/Wallet';
-import { Purchase } from '../models/Purchase';
-import { bad, conflict, notFound } from '../lib/errors';
+import { Hold } from "../models/Hold";
+import { Drop } from "../models/Drop";
+import { Wallet } from "../models/Wallet";
+import { Purchase } from "../models/Purchase";
+import { bad, conflict, notFound } from "../lib/errors";
 
 /**
  * PAY — confirm a hold, move coins. Money must never be lost or double-charged.
@@ -22,50 +22,73 @@ export async function pay(params: { holdId: string; userId: string }) {
   // Already paid? (retry after success) -> return the existing purchase.
   const prior = await Purchase.findOne({ holdId });
   if (prior) {
-    if (prior.userId !== userId) throw conflict('NOT_OWNER', 'hold belongs to another user');
+    if (prior.userId !== userId)
+      throw conflict("NOT_OWNER", "hold belongs to another user");
     return { purchase: prior, replay: true };
   }
 
   const hold = await Hold.findById(holdId);
-  if (!hold) throw notFound('HOLD_NOT_FOUND', 'hold not found');
-  if (hold.userId !== userId) throw conflict('NOT_OWNER', 'hold belongs to another user');
-  if (hold.status === 'expired') throw conflict('HOLD_EXPIRED', 'hold expired');
-  if (hold.status === 'cancelled') throw conflict('HOLD_CANCELLED', 'hold cancelled');
-  if (hold.expiresAt <= new Date() && hold.status === 'active') {
-    throw conflict('HOLD_EXPIRED', 'hold expired');
+  if (!hold) throw notFound("HOLD_NOT_FOUND", "hold not found");
+  if (hold.userId !== userId)
+    throw conflict("NOT_OWNER", "hold belongs to another user");
+  if (hold.status === "expired") throw conflict("HOLD_EXPIRED", "hold expired");
+  if (hold.status === "cancelled")
+    throw conflict("HOLD_CANCELLED", "hold cancelled");
+  if (hold.expiresAt <= new Date() && hold.status === "active") {
+    throw conflict("HOLD_EXPIRED", "hold expired");
   }
 
   const drop = await Drop.findById(hold.dropId);
-  if (!drop) throw notFound('DROP_NOT_FOUND', 'drop not found');
+  if (!drop) throw notFound("DROP_NOT_FOUND", "drop not found");
   const cost = drop.pricePerUnit * hold.units;
 
   // Step 1: win the confirm race.
   const confirmed = await Hold.findOneAndUpdate(
-    { _id: holdId, status: 'active', expiresAt: { $gt: new Date() } },
-    { $set: { status: 'confirmed' } },
-    { new: true }
+    { _id: holdId, status: "active", expiresAt: { $gt: new Date() } },
+    { $set: { status: "confirmed" } },
+    { new: true },
   );
   if (!confirmed) {
-    const after = await Purchase.findOne({ holdId });
-    if (after) return { purchase: after, replay: true };
-    throw conflict('HOLD_NOT_CONFIRMABLE', 'hold no longer active');
+    // We lost the confirm race. The winner may still be mid-flight (debiting +
+    // writing the Purchase), so the Purchase might not exist for a few ms yet.
+    // Re-check with a short backoff before giving up — this makes concurrent
+    // double-pay resolve to the same purchase instead of a spurious conflict.
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const after = await Purchase.findOne({ holdId });
+      if (after) return { purchase: after, replay: true };
+      // If the hold is terminal (expired/cancelled) and no purchase exists, stop.
+      const cur = await Hold.findById(holdId);
+      if (cur && (cur.status === "expired" || cur.status === "cancelled"))
+        break;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    const finalCheck = await Purchase.findOne({ holdId });
+    if (finalCheck) return { purchase: finalCheck, replay: true };
+    throw conflict("HOLD_NOT_CONFIRMABLE", "hold no longer active");
   }
 
   // Step 2: conditional debit.
   const debited = await Wallet.findOneAndUpdate(
     { userId, balance: { $gte: cost } },
     { $inc: { balance: -cost } },
-    { new: true }
+    { new: true },
   );
   if (!debited) {
-    await Hold.updateOne({ _id: holdId, status: 'confirmed' }, { $set: { status: 'active' } });
-    throw bad('INSUFFICIENT_FUNDS', 'wallet balance too low');
+    await Hold.updateOne(
+      { _id: holdId, status: "confirmed" },
+      { $set: { status: "active" } },
+    );
+    throw bad("INSUFFICIENT_FUNDS", "wallet balance too low");
   }
 
   // Step 3: record purchase (unique holdId guards against dup).
   try {
     const purchase = await Purchase.create({
-      holdId, dropId: hold.dropId, userId, units: hold.units, totalPaid: cost,
+      holdId,
+      dropId: hold.dropId,
+      userId,
+      units: hold.units,
+      totalPaid: cost,
     });
     return { purchase, replay: false };
   } catch (e: any) {
