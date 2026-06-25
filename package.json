@@ -13,6 +13,7 @@
     "loadtest": "ts-node src/scripts/loadtest.ts"
   },
   "dependencies": {
+    "dotenv": "^17.4.2",
     "express": "^4.19.2",
     "mongoose": "^8.5.1"
   },
