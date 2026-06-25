@@ -1,0 +1,102 @@
+openapi: 3.0.3
+info:
+  title: BeSpoke Drops API
+  version: 1.0.0
+  description: >
+    Limited-edition drops backend. Auth is a stub: send header `x-user-id`.
+    Claims are idempotent via the `Idempotency-Key` header.
+servers:
+  - url: http://localhost:3000/api
+paths:
+  /drops:
+    post:
+      summary: Create a drop (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [itemName, totalStock, pricePerUnit, goLiveAt, maxPerUser]
+              properties:
+                itemName: { type: string }
+                totalStock: { type: integer, minimum: 1 }
+                pricePerUnit: { type: integer, minimum: 0 }
+                goLiveAt: { type: string, format: date-time }
+                maxPerUser: { type: integer, minimum: 1 }
+      responses: { '201': { description: created } }
+  /drops/{id}:
+    get:
+      summary: Get a drop (reflects live availability)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: ok }, '404': { description: not found } }
+  /drops/{id}/claim:
+    post:
+      summary: Claim units (places a hold). Idempotent via Idempotency-Key.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: x-user-id, in: header, required: true, schema: { type: string } }
+        - { name: Idempotency-Key, in: header, required: false, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { units: { type: integer } } }
+      responses:
+        '201': { description: hold created }
+        '200': { description: idempotent replay }
+        '409': { description: SOLD_OUT / MAX_PER_USER / NOT_LIVE }
+  /holds/{id}/pay:
+    post:
+      summary: Confirm a hold, debit wallet. Idempotent.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: x-user-id, in: header, required: true, schema: { type: string } }
+      responses:
+        '201': { description: purchase created }
+        '200': { description: idempotent replay }
+        '400': { description: INSUFFICIENT_FUNDS }
+        '409': { description: HOLD_EXPIRED / NOT_OWNER }
+  /drops/{id}/waitlist:
+    post:
+      summary: Join waitlist (only when sold out)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: x-user-id, in: header, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { units: { type: integer } } }
+      responses: { '201': { description: joined }, '409': { description: NOT_SOLD_OUT / ALREADY_WAITING } }
+  /holds/{id}/cancel:
+    post:
+      summary: Cancel a hold — returns stock; refunds coins if already paid. Idempotent.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: x-user-id, in: header, required: true, schema: { type: string } }
+      responses:
+        '200': { description: cancelled (returns refunded + stockReturned) }
+        '409': { description: NOT_OWNER / NOT_CANCELLABLE }
+  /me/wallet/topup:
+    post:
+      summary: Add coins to wallet (creates wallet if absent)
+      parameters: [{ name: x-user-id, in: header, required: true, schema: { type: string } }]
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { amount: { type: integer, minimum: 1 } } }
+      responses: { '200': { description: new balance }, '400': { description: VALIDATION } }
+  /me/holds:
+    get:
+      summary: My holds
+      parameters: [{ name: x-user-id, in: header, required: true, schema: { type: string } }]
+      responses: { '200': { description: ok } }
+  /me/purchases:
+    get:
+      summary: My purchases
+      parameters: [{ name: x-user-id, in: header, required: true, schema: { type: string } }]
+      responses: { '200': { description: ok } }
+  /me/wallet:
+    get:
+      summary: My wallet balance
+      parameters: [{ name: x-user-id, in: header, required: true, schema: { type: string } }]
+      responses: { '200': { description: ok } }

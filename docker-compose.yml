@@ -1,0 +1,12 @@
+# Standalone MongoDB is intentional: the whole design relies on single-document
+# atomic operators (findOneAndUpdate), NOT multi-doc transactions — so no replica
+# set is required. Clean checkout: `docker compose up -d` then `npm run seed`.
+services:
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+volumes:
+  mongo_data:
